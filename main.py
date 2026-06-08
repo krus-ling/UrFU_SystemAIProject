@@ -2,6 +2,7 @@ import sys
 import simpy
 import random
 import numpy as np
+import math
 
 from PyQt5 import QtWidgets, QtCore, QtGui
 import pyqtgraph as pg
@@ -41,6 +42,15 @@ BTN_BLUE = f"""
     QPushButton:hover {{ background: {ACCENT_GREEN}; }}
 """
 
+BTN_GREEN = f"""
+    QPushButton {{
+        background: {ACCENT_GREEN}; color: {BG_COLOR};
+        border: none; border-radius: 6px; font-weight: bold; font-size: 14px;
+    }}
+    QPushButton:hover {{ background: {ACCENT_BLUE}; }}
+    QPushButton:pressed {{ background: {ACCENT_YELLOW}; }}
+"""
+
 BTN_PANEL = f"""
     QPushButton {{
         background: {PANEL_COLOR}; color: {TEXT_COLOR};
@@ -54,6 +64,7 @@ BTN_PANEL = f"""
 
 class InputScreen(QtWidgets.QWidget):
     start_signal = QtCore.pyqtSignal(int, float, float, int)
+    analyze_signal = QtCore.pyqtSignal(float, float, int)  # НОВЫЙ СИГНАЛ
 
     def __init__(self):
         super().__init__()
@@ -68,10 +79,10 @@ class InputScreen(QtWidgets.QWidget):
 
         self.fields = {}
         params = [
-            ("Количество операторов",                "operators", "3"),
+            ("Количество операторов", "operators", "3"),
             ("Интенсивность прихода (клиентов/мин)", "intensity", "1.0"),
-            ("Среднее время обслуживания (мин)",      "service",   "2.0"),
-            ("Время симуляции (мин)",                 "simtime",   "100"),
+            ("Среднее время обслуживания (мин)", "service", "2.0"),
+            ("Время симуляции (мин)", "simtime", "100"),
         ]
         for label, key, default in params:
             row = QtWidgets.QHBoxLayout()
@@ -87,13 +98,29 @@ class InputScreen(QtWidgets.QWidget):
             row.addWidget(inp)
             layout.addLayout(row)
 
-        btn = QtWidgets.QPushButton("Начать симуляцию")
-        btn.setFixedSize(220, 48)
-        btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
-        btn.setStyleSheet(BTN_BLUE)
-        btn.clicked.connect(self.emit_start)
         layout.addSpacing(20)
-        layout.addWidget(btn, alignment=QtCore.Qt.AlignCenter)
+
+        # --- БЛОК КНОПОК ---
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.setAlignment(QtCore.Qt.AlignCenter)
+        btn_layout.setSpacing(15)
+
+        btn_sim = QtWidgets.QPushButton("Визуализация")
+        btn_sim.setFixedSize(200, 48)
+        btn_sim.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        btn_sim.setStyleSheet(BTN_BLUE)
+        btn_sim.clicked.connect(self.emit_start)
+
+        # НОВАЯ КНОПКА
+        btn_analyze = QtWidgets.QPushButton("Провести анализ")
+        btn_analyze.setFixedSize(200, 48)
+        btn_analyze.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        btn_analyze.setStyleSheet(BTN_GREEN)  # <-- Просто применяем новый стиль
+        btn_analyze.clicked.connect(self.emit_analyze)
+
+        btn_layout.addWidget(btn_sim)
+        btn_layout.addWidget(btn_analyze)
+        layout.addLayout(btn_layout)
 
     def emit_start(self):
         try:
@@ -104,6 +131,202 @@ class InputScreen(QtWidgets.QWidget):
             self.start_signal.emit(ops, intensity, service, simtime)
         except ValueError:
             QtWidgets.QMessageBox.warning(self, "Ошибка", "Проверь введённые значения.")
+
+    def emit_analyze(self):
+        try:
+            intensity = float(self.fields["intensity"].text())
+            service = float(self.fields["service"].text())
+            simtime = int(self.fields["simtime"].text())
+            self.analyze_signal.emit(intensity, service, simtime)
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Проверь введённые значения.")
+
+
+class OptimizationScreen(QtWidgets.QWidget):
+    back_signal = QtCore.pyqtSignal()
+
+    def __init__(self, intensity, service, simtime):
+        super().__init__()
+        self.intensity = intensity
+        self.service = service
+        self.simtime = simtime
+
+        self._build_ui()
+        self._run_experiments()
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+
+        title = QtWidgets.QLabel("Анализ конфигураций и выбор оптимального решения")
+        title.setStyleSheet(f"color: {TEXT_COLOR}; font-size: 22px; font-weight: bold;")
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # Таблица результатов (стартуем с 0 строк, они добавятся динамически)
+        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Операторов", "Обслужено", "Ср. ожидание (мин)", "Макс. ожидание (мин)", "Ср. очередь (чел)",
+             "Загрузка (%)"])
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.table.setStyleSheet(f"""
+            QTableWidget {{ background: {PANEL_COLOR}; color: {TEXT_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 8px; gridline-color: {BORDER_COLOR}; font-size: 14px;}}
+            QHeaderView::section {{ background: {BG_COLOR}; color: {ACCENT_BLUE}; font-weight: bold; border: 1px solid {BORDER_COLOR}; padding: 4px; }}
+        """)
+        layout.addWidget(self.table)
+
+        # Аналитическое заключение
+        self.conclusion = QtWidgets.QTextEdit()
+        self.conclusion.setReadOnly(True)
+        self.conclusion.setStyleSheet(f"""
+            QTextEdit {{ background: {PANEL_COLOR}; color: {TEXT_COLOR}; border: 1px solid {BORDER_COLOR}; border-radius: 8px; padding: 15px; font-size: 14px; }}
+        """)
+        layout.addWidget(self.conclusion)
+
+        # Кнопка назад
+        btn_back = QtWidgets.QPushButton("Назад к настройкам")
+        btn_back.setFixedSize(220, 48)
+        btn_back.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        btn_back.setStyleSheet(BTN_BLUE)
+        btn_back.clicked.connect(self.back_signal.emit)
+        layout.addWidget(btn_back, alignment=QtCore.Qt.AlignCenter)
+
+    def _run_headless_sim(self, ops, intensity, service, simtime):
+        env = simpy.Environment()
+        operators = simpy.Resource(env, capacity=ops)
+
+        wait_times = []
+        total_busy = [0.0]
+        served = [0]
+
+        def customer():
+            arrival = env.now
+            with operators.request() as req:
+                yield req
+                wait_times.append(env.now - arrival)
+                dur = random.expovariate(1.0 / service)
+                total_busy[0] += dur
+                yield env.timeout(dur)
+                served[0] += 1
+
+        def customer_gen():
+            while True:
+                yield env.timeout(random.expovariate(intensity))
+                env.process(customer())
+
+        env.process(customer_gen())
+        env.run(until=simtime)
+
+        avg_w = float(np.mean(wait_times)) if wait_times else 0.0
+        max_w = float(np.max(wait_times)) if wait_times else 0.0
+        util = min(100.0, (total_busy[0] / (ops * simtime)) * 100) if simtime > 0 else 0.0
+        avg_q = intensity * avg_w  # По формуле Литтла (L = lambda * W)
+
+        return {
+            "ops": ops,
+            "served": served[0],
+            "avg_wait": avg_w,
+            "max_wait": max_w,
+            "avg_queue": avg_q,
+            "util": util
+        }
+
+    def _run_experiments(self):
+        # Теоретический минимум операторов
+        min_theoretical = math.ceil(self.intensity * self.service)
+
+        # Начинаем на 1 оператора меньше теоретического минимума (показать перегруз)
+        start_ops = max(1, min_theoretical - 1)
+
+        results = []
+        optimal_config = None
+
+        # Динамически перебираем количество операторов
+        for ops in range(start_ops, start_ops + 50):
+            res = self._run_headless_sim(ops, self.intensity, self.service, self.simtime)
+            results.append(res)
+
+            # Добавляем новую строку в таблицу
+            row_idx = self.table.rowCount()
+            self.table.insertRow(row_idx)
+
+            cols_data = [
+                str(res["ops"]),
+                str(res["served"]),
+                f"{res['avg_wait']:.2f}",
+                f"{res['max_wait']:.2f}",
+                f"{res['avg_queue']:.2f}",
+                f"{res['util']:.2f}%"
+            ]
+
+            for col_idx, text in enumerate(cols_data):
+                item = QtWidgets.QTableWidgetItem(text)
+                item.setTextAlignment(QtCore.Qt.AlignCenter)
+                self.table.setItem(row_idx, col_idx, item)
+
+            # Ищем идеальную загрузку (не более 85%)
+            if res["util"] <= 85.0:
+                optimal_config = res
+
+                # Делаем еще один шаг вперед для наглядности (показать, что дальше - простой)
+                extra_ops = ops + 1
+                extra_res = self._run_headless_sim(extra_ops, self.intensity, self.service, self.simtime)
+                results.append(extra_res)
+
+                row_idx += 1
+                self.table.insertRow(row_idx)
+                cols_data_extra = [
+                    str(extra_res["ops"]),
+                    str(extra_res["served"]),
+                    f"{extra_res['avg_wait']:.2f}",
+                    f"{extra_res['max_wait']:.2f}",
+                    f"{extra_res['avg_queue']:.2f}",
+                    f"{extra_res['util']:.2f}%"
+                ]
+                for col_idx, text in enumerate(cols_data_extra):
+                    item = QtWidgets.QTableWidgetItem(text)
+                    item.setTextAlignment(QtCore.Qt.AlignCenter)
+                    self.table.setItem(row_idx, col_idx, item)
+                break
+
+        if not optimal_config:
+            optimal_config = results[-1]  # Защита от бесконечного цикла
+
+        # Подсветка оптимальной строки зеленым цветом
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).text() == str(optimal_config["ops"]):
+                for col in range(6):
+                    self.table.item(row, col).setBackground(
+                        QtGui.QColor(*hex_to_tuple(ACCENT_GREEN), 40)
+                    )
+
+        self._generate_analysis_text(results, optimal_config)
+
+    def _generate_analysis_text(self, results, optimal_res):
+        text = "📄 АНАЛИТИЧЕСКОЕ ЗАКЛЮЧЕНИЕ И ВЫБОР РЕШЕНИЯ:\n\n"
+        text += "1. Критерий эффективности: Оптимальная конфигурация СМО должна обеспечивать загрузку операторов в пределах 70–85% при минимальном времени ожидания в очереди.\n\n"
+        text += "2. Анализ данных:\n"
+
+        # Формируем динамические выводы
+        overloaded = [str(r['ops']) for r in results if r['util'] > 90]
+        if overloaded:
+            ops_str = f"{overloaded[0]}-{overloaded[-1]}" if len(overloaded) > 1 else overloaded[0]
+            text += f"   • При {ops_str} операторах система нестабильна, загрузка близка к максимуму, время ожидания растет лавинообразно.\n"
+
+        underloaded = [str(r['ops']) for r in results if r['util'] < 70]
+        if underloaded:
+            ops_str_u = f"{underloaded[0]} и более" if len(underloaded) == 1 else f"{underloaded[0]}-{underloaded[-1]}"
+            text += f"   • При {ops_str_u} операторах время ожидания почти нулевое, но загрузка падает ниже эффективного минимума, что означает необоснованный финансовый простой персонала.\n"
+
+        text += "\n🎯 РЕКОМЕНДАЦИЯ:\n"
+        text += f"Эффективным решением является конфигурация с количеством операторов: {optimal_res['ops']}.\n"
+        text += f"Загрузка: {optimal_res['util']:.1f}%, среднее ожидание: {optimal_res['avg_wait']:.2f} мин. Это обеспечивает идеальный экономический баланс."
+
+        self.conclusion.setText(text)
 
 
 class ResultsDialog(QtWidgets.QDialog):
@@ -468,6 +691,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _show_input(self):
         input_screen = InputScreen()
         input_screen.start_signal.connect(self._go_to_sim)
+        input_screen.analyze_signal.connect(self._go_to_optimization) # ПОДКЛЮЧАЕМ СИГНАЛ АНАЛИЗА
         self.stack.addWidget(input_screen)
         self.stack.setCurrentWidget(input_screen)
 
@@ -477,11 +701,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.addWidget(sim)
         self.stack.setCurrentWidget(sim)
 
+    def _go_to_optimization(self, intensity, service, simtime):
+        opt = OptimizationScreen(intensity, service, simtime)
+        opt.back_signal.connect(self._on_restart)
+        self.stack.addWidget(opt)
+        self.stack.setCurrentWidget(opt)
+
     def _on_restart(self):
-        old_sim = self.stack.currentWidget()
+        old_widget = self.stack.currentWidget()
         self._show_input()
-        self.stack.removeWidget(old_sim)
-        old_sim.deleteLater()
+        self.stack.removeWidget(old_widget)
+        old_widget.deleteLater()
 
 
 if __name__ == "__main__":
