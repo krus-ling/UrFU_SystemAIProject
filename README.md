@@ -4,7 +4,7 @@
 Метод: **Дискретно-событийное моделирование (SimPy)**  
 🎯 Никакой установки — запустил и работаешь.
 
-![Версия](https://img.shields.io/badge/version-1.0-blue)
+![Версия](https://img.shields.io/badge/version-1.1.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-green)
 ![SimPy](https://img.shields.io/badge/SimPy-4.0.2-orange)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
